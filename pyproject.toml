@@ -8,8 +8,12 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "dotenv>=0.9.9",
     "langchain-google-genai>=4.4.0",
     "langgraph>=1.2.11",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "streamlit>=1.64.0",
 ]
 
 [project.scripts]
