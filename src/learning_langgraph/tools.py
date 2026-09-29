@@ -24,8 +24,9 @@ def send_gmail_mesage(to: str, body: str, subject: str):
         subject : the email subject
     """
 
-    messag_id = send_email(to=to, body=body, subject=subject)
-
+    message_id = send_email(to=to, body=body, subject=subject)
+    if message_id == "not approved":
+        return "Email wasnt sent due to user's decision "
     return f"Email was sent successfully to {to}"
 
 

@@ -3,6 +3,7 @@ import uuid
 import streamlit as st
 
 from learning_langgraph.tools import ingesting_into_rag
+
 from learning_langgraph.agentic_chatbot_backend import (
     chatbot,
     conn,
@@ -14,6 +15,8 @@ from langchain_core.messages import (
     ToolMessage,
     AIMessage,
 )
+
+from langgraph.types import Command
 
 db = conn.cursor()
 
@@ -47,19 +50,144 @@ def load_old_messages(thread_id):
 
 
 # =========================================================
+# HITL FUNCTIONS
+# =========================================================
+
+
+def get_pending_interrupt(thread_id):
+
+    config = {"configurable": {"thread_id": thread_id}}
+
+    state = chatbot.get_state(config=config)
+
+    for task in state.tasks:
+
+        interrupts = getattr(task, "interrupts", ())
+
+        if interrupts:
+
+            interrupt_obj = interrupts[0]
+
+            return {
+                "id": getattr(interrupt_obj, "id", None),
+                "value": getattr(interrupt_obj, "value", interrupt_obj),
+            }
+
+    return None
+
+
+def resume_after_human_decision(approved):
+
+    CONFIG = {
+        "configurable": {"thread_id": st.session_state["thread_id"]},
+        "metadata": {"thread_id": st.session_state["thread_id"]},
+        "run_name": "human_approval_resume",
+    }
+
+    return chatbot.stream(
+        Command(resume={"approved": approved}),
+        config=CONFIG,
+        stream_mode="messages",
+    )
+
+
+# =========================================================
+# MESSAGE EXTRACTION
+# =========================================================
+
+
+def extract_ai_text(message):
+
+    content = message.content
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        texts = []
+
+        for item in content:
+
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(item.get("text", ""))
+
+        return "".join(texts)
+
+    return str(content)
+
+
+# =========================================================
+# STREAM AI RESPONSE
+# =========================================================
+
+
+def stream_ai_response(stream):
+
+    for message_chunk, metadata in stream:
+
+        # =============================================
+        # TOOL MESSAGE
+        # =============================================
+
+        if isinstance(message_chunk, ToolMessage):
+
+            tool_name = getattr(
+                message_chunk,
+                "name",
+                "tool",
+            )
+
+            if not st.session_state.get("status_box"):
+
+                st.session_state["status_box"] = st.status(
+                    f"Using {tool_name}",
+                    expanded=True,
+                )
+
+            else:
+
+                st.session_state["status_box"].update(
+                    label=f"Using {tool_name}",
+                    state="running",
+                    expanded=True,
+                )
+
+        # =============================================
+        # AI MESSAGE
+        # =============================================
+
+        elif isinstance(message_chunk, AIMessage):
+
+            text = extract_ai_text(message_chunk)
+
+            if text:
+                yield text
+
+
+# =========================================================
 # INITIALIZE SESSION STATE
 # =========================================================
 
+
 if "message_history" not in st.session_state:
+
     st.session_state["message_history"] = []
 
 
 if "thread_id" not in st.session_state:
+
     st.session_state["thread_id"] = generate_id()
 
 
 if "chat_threads" not in st.session_state:
+
     st.session_state["chat_threads"] = gettig_all_threads()
+
+
+if "status_box" not in st.session_state:
+
+    st.session_state["status_box"] = None
 
 
 # Add current thread
@@ -70,27 +198,34 @@ add_thread_id(st.session_state["thread_id"])
 # PAGE
 # =========================================================
 
+
 st.title("Chat Bot")
 
-st.write(f"Current chat: {st.session_state['thread_id']}")
+st.write(f"Current chat: " f"{st.session_state['thread_id']}")
 
 
 # =========================================================
 # DISPLAY CURRENT MESSAGES
 # =========================================================
 
+
 for message in st.session_state["message_history"]:
 
     with st.chat_message(message["role"]):
+
         if message["role"] == "assistant":
+
             st.markdown(message["content"])
+
         else:
+
             st.text(message["content"])
 
 
 # =========================================================
 # SIDEBAR
 # =========================================================
+
 
 if st.sidebar.button("New Chat"):
 
@@ -114,9 +249,9 @@ for thread_id in st.session_state["chat_threads"][::-1]:
 
         for message in messages:
 
-            # ---------------------------------------------
+            # =========================================
             # USER MESSAGE
-            # ---------------------------------------------
+            # =========================================
 
             if isinstance(message, HumanMessage):
 
@@ -127,9 +262,9 @@ for thread_id in st.session_state["chat_threads"][::-1]:
                     }
                 )
 
-            # ---------------------------------------------
+            # =========================================
             # AI MESSAGE
-            # ---------------------------------------------
+            # =========================================
 
             elif isinstance(message, AIMessage):
 
@@ -173,8 +308,102 @@ for thread_id in st.session_state["chat_threads"][::-1]:
 
 
 # =========================================================
+# CHECK FOR EXISTING HITL INTERRUPT
+# =========================================================
+
+pending_interrupt = get_pending_interrupt(st.session_state["thread_id"])
+
+
+if pending_interrupt:
+
+    interrupt_value = pending_interrupt["value"]
+
+    st.warning("Human approval is required.")
+
+    # The value comes from:
+    #
+    # interrupt(
+    #     f"Do you want to send..."
+    # )
+    #
+    # Therefore it is normally a string.
+
+    st.info(str(interrupt_value))
+
+    col1, col2 = st.columns(2)
+
+    # =====================================================
+    # APPROVE
+    # =====================================================
+
+    with col1:
+
+        approve = st.button(
+            "✅ Approve",
+            key=(f"approve_" f"{pending_interrupt['id']}"),
+            use_container_width=True,
+        )
+
+    # =====================================================
+    # REJECT
+    # =====================================================
+
+    with col2:
+
+        reject = st.button(
+            "❌ Reject",
+            key=(f"reject_" f"{pending_interrupt['id']}"),
+            use_container_width=True,
+        )
+
+    # =====================================================
+    # HANDLE DECISION
+    # =====================================================
+
+    if approve or reject:
+
+        approved = approve
+
+        st.session_state["status_box"] = None
+
+        with st.chat_message("assistant"):
+
+            resumed_stream = resume_after_human_decision(approved)
+
+            resumed_text = st.write_stream(stream_ai_response(resumed_stream))
+
+        # =================================================
+        # SAVE RESUMED AI RESPONSE
+        # =================================================
+
+        if resumed_text:
+
+            st.session_state["message_history"].append(
+                {
+                    "role": "assistant",
+                    "content": resumed_text,
+                }
+            )
+
+        # =================================================
+        # FINISH TOOL STATUS
+        # =================================================
+
+        if st.session_state.get("status_box"):
+
+            st.session_state["status_box"].update(
+                label="Finished",
+                state="complete",
+                expanded=False,
+            )
+
+        st.rerun()
+
+
+# =========================================================
 # CHAT INPUT + FILE UPLOAD
 # =========================================================
+
 
 chat_input = st.chat_input(
     "Type here...",
@@ -186,6 +415,7 @@ chat_input = st.chat_input(
 # =========================================================
 # HANDLE CHAT INPUT
 # =========================================================
+
 
 if chat_input:
 
@@ -201,37 +431,36 @@ if chat_input:
 
         for uploaded_file in uploaded_files:
 
-            # Temporary file path
             file_path = f"temp_{uploaded_file.name}"
 
             try:
 
-                # -----------------------------------------
-                # Save uploaded file
-                # -----------------------------------------
+                # =========================================
+                # SAVE FILE
+                # =========================================
 
                 with open(file_path, "wb") as f:
 
                     f.write(uploaded_file.getbuffer())
 
-                # -----------------------------------------
-                # Ingest into RAG
-                # -----------------------------------------
+                # =========================================
+                # INGEST INTO RAG
+                # =========================================
 
                 with st.status(
-                    f"Processing {uploaded_file.name}...",
+                    (f"Processing " f"{uploaded_file.name}..."),
                     expanded=True,
                 ):
 
                     ingesting_into_rag(file_path)
 
-                st.success(f"{uploaded_file.name} added to the knowledge base.")
+                st.success((f"{uploaded_file.name} " "added to the knowledge base."))
 
             finally:
 
-                # -----------------------------------------
-                # Delete temporary file
-                # -----------------------------------------
+                # =========================================
+                # DELETE TEMP FILE
+                # =========================================
 
                 if os.path.exists(file_path):
 
@@ -243,9 +472,9 @@ if chat_input:
 
     if user_input:
 
-        # ---------------------------------------------
-        # Save user message to session history
-        # ---------------------------------------------
+        # ================================================
+        # SAVE USER MESSAGE
+        # ================================================
 
         st.session_state["message_history"].append(
             {
@@ -254,9 +483,9 @@ if chat_input:
             }
         )
 
-        # ---------------------------------------------
-        # Display user message
-        # ---------------------------------------------
+        # ================================================
+        # DISPLAY USER MESSAGE
+        # ================================================
 
         with st.chat_message("user"):
 
@@ -272,123 +501,125 @@ if chat_input:
             "run_name": "chat_trace",
         }
 
+        st.session_state["status_box"] = None
+
         # =================================================
         # AI RESPONSE
         # =================================================
 
         with st.chat_message("assistant"):
 
-            status_holder = {"box": None}
+            ai_msg = st.write_stream(
+                stream_ai_response(
+                    chatbot.stream(
+                        {"messages": [HumanMessage(content=user_input)]},
+                        config=CONFIG,
+                        stream_mode="messages",
+                    )
+                )
+            )
 
-            def ai_only():
+        # =================================================
+        # CHECK IF GRAPH PAUSED
+        # =================================================
 
-                for message_chunk, metadata in chatbot.stream(
-                    {"messages": [HumanMessage(content=user_input)]},
-                    config=CONFIG,
-                    stream_mode="messages",
-                ):
+        pending_interrupt = get_pending_interrupt(st.session_state["thread_id"])
 
-                    # =====================================
-                    # TOOL MESSAGE
-                    # =====================================
+        if pending_interrupt:
 
-                    if isinstance(message_chunk, ToolMessage):
+            # =============================================
+            # HITL UI
+            # =============================================
 
-                        tool_name = getattr(
-                            message_chunk,
-                            "name",
-                            "tool",
-                        )
+            interrupt_value = pending_interrupt["value"]
 
-                        if not status_holder["box"]:
+            st.warning("Human approval is required.")
 
-                            status_holder["box"] = st.status(
-                                f"Using {tool_name}",
-                                expanded=True,
-                            )
+            st.info(str(interrupt_value))
 
-                        else:
+            col1, col2 = st.columns(2)
 
-                            status_holder["box"].update(
-                                label=f"Using {tool_name}",
-                                expanded=True,
-                                state="running",
-                            )
+            # =============================================
+            # APPROVE BUTTON
+            # =============================================
 
-                    # =====================================
-                    # AI MESSAGE
-                    # =====================================
+            with col1:
 
-                    elif isinstance(message_chunk, AIMessage):
+                approve = st.button(
+                    "✅ Approve",
+                    key=("approve_new_" f"{pending_interrupt['id']}"),
+                    use_container_width=True,
+                )
 
-                        content = message_chunk.content
+            # =============================================
+            # REJECT BUTTON
+            # =============================================
 
-                        # ---------------------------------
-                        # String content
-                        # ---------------------------------
+            with col2:
 
-                        if isinstance(content, str):
+                reject = st.button(
+                    "❌ Reject",
+                    key=("reject_new_" f"{pending_interrupt['id']}"),
+                    use_container_width=True,
+                )
 
-                            if content:
+            # =============================================
+            # HANDLE DECISION
+            # =============================================
 
-                                yield content
+            if approve or reject:
 
-                        # ---------------------------------
-                        # List content
-                        # ---------------------------------
+                approved = approve
 
-                        elif isinstance(content, list):
+                with st.chat_message("assistant"):
 
-                            texts = []
+                    resumed_stream = resume_after_human_decision(approved)
 
-                            for item in content:
+                    resumed_text = st.write_stream(stream_ai_response(resumed_stream))
 
-                                if (
-                                    isinstance(item, dict)
-                                    and item.get("type") == "text"
-                                ):
+                if resumed_text:
 
-                                    texts.append(item.get("text", ""))
+                    st.session_state["message_history"].append(
+                        {
+                            "role": "assistant",
+                            "content": resumed_text,
+                        }
+                    )
 
-                            text = "".join(texts)
+                st.rerun()
 
-                            if text:
-
-                                yield text
-
-            # =================================================
-            # STREAM AI RESPONSE
-            # =================================================
-
-            ai_msg = st.write_stream(ai_only())
+        else:
 
             # =================================================
             # FINISH TOOL STATUS
             # =================================================
 
-            if status_holder["box"]:
+            if st.session_state.get("status_box"):
 
-                status_holder["box"].update(
+                st.session_state["status_box"].update(
                     label="Finished using the tool",
                     state="complete",
                     expanded=False,
                 )
 
-        # =================================================
-        # SAVE AI MESSAGE
-        # =================================================
+            # =================================================
+            # SAVE AI MESSAGE
+            # =================================================
 
-        st.session_state["message_history"].append(
-            {
-                "role": "assistant",
-                "content": ai_msg,
-            }
-        )
+            if ai_msg:
+
+                st.session_state["message_history"].append(
+                    {
+                        "role": "assistant",
+                        "content": ai_msg,
+                    }
+                )
 
 
 # =========================================================
 # DEBUG: CURRENT LANGGRAPH STATE
 # =========================================================
+
 
 state = chatbot.get_state(
     config={"configurable": {"thread_id": st.session_state["thread_id"]}}

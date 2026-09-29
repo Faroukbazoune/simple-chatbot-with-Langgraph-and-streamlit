@@ -1,5 +1,7 @@
 import os
 import base64
+from langchain.messages import AIMessage
+from langgraph.types import Command, interrupt
 from email.message import EmailMessage
 from google.auth.transport.requests import Request  # refreshing the token
 from google.oauth2.credentials import Credentials  # for creds
@@ -38,13 +40,18 @@ def send_email(to: str, body: str, subject: str):
     message["to"] = to
     message["subject"] = subject
 
-    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    decision = interrupt(f"do yo want to send this message to {to} \n\n{body}")
+    if not decision["approved"]:
+        return "not approved"
+    else:
 
-    result = (
-        service.users()
-        .messages()
-        .send(userId="me", body={"raw": encoded_message})
-        .execute()
-    )
+        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-    return result["id"]
+        result = (
+            service.users()
+            .messages()
+            .send(userId="me", body={"raw": encoded_message})
+            .execute()
+        )
+
+        return result["id"]

@@ -24,7 +24,7 @@ checkpointer = SqliteSaver(conn=conn)
 
 tools = [send_gmail_mesage, get_current_weather, search_tool, rag_tool]
 
-llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash")
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 llm_withtools = llm.bind(tools=tools)
 
 
@@ -63,7 +63,7 @@ chatbot = graph.compile(checkpointer=checkpointer)
 
 # pprint(
 #     chatbot.get_state(
-#         config={"configurable": {"thread_id": "e2afacdb-b677-41ad-a94b-48ec4dbb9839"}}
+#         config={"configurable": {"thread_id": "6a768c40-a696-4ab6-b201-43bb72939a9f"}}
 #     ).values
 # )
 
